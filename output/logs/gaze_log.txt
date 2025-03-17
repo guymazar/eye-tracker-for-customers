@@ -1,0 +1,2 @@
+Frame 0: output/gaze_heatmaps/heatmap_0.png
+Frame 0: output/gaze_heatmaps/heatmap_0.png
