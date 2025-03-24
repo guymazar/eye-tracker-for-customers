@@ -1,11 +1,13 @@
 import cv2
 import numpy as np
 import os
+import time
 
 class GazeAnalyzer:
     def __init__(self, output_dir='output'):
         self.output_dir = output_dir
         self.heatmap = None
+        self.temporal_heatmap = None  # For tracking gaze points with time decay
         self.frame_count = 0
         self.frame_dimensions_set = False
         self.screen_width = 1920  # Default screen width in pixels
@@ -16,6 +18,13 @@ class GazeAnalyzer:
         self.y_scale_factor = 1.0  # Increase to make vertical eye movements more sensitive
         self.x_offset = 0  # Adjust if gaze is consistently off horizontally
         self.y_offset = 0  # Adjust if gaze is consistently off vertically
+        
+        # Heatmap configuration
+        self.blur_radius = 25      # Size of Gaussian blur kernel
+        self.decay_factor = 0.98   # Temporal decay factor (0.98 = 2% decay per frame)
+        self.point_lifetime = 90   # Number of frames a point remains significant (at 30fps = ~3 seconds)
+        self.last_reset_time = time.time()
+        self.auto_reset_interval = 30  # Auto-reset heatmap after this many seconds (0 to disable)
 
         # Ensure output directories exist
         os.makedirs(os.path.join(self.output_dir, 'gaze_heatmaps'), exist_ok=True)
@@ -25,12 +34,20 @@ class GazeAnalyzer:
         """Reset the heatmap to all zeros"""
         if self.heatmap is not None:
             self.heatmap.fill(0)
+            if self.temporal_heatmap is not None:
+                self.temporal_heatmap.fill(0)
+            self.last_reset_time = time.time()
             print("Heatmap reset to zeros")
         
     def set_screen_dimensions(self, width, height):
         """Set the dimensions of the screen being viewed"""
         self.screen_width = width
         self.screen_height = height
+        
+        # Initialize heatmaps
+        if self.heatmap is None:
+            self.heatmap = np.zeros((self.screen_height, self.screen_width), dtype=np.float32)
+            self.temporal_heatmap = np.zeros((self.screen_height, self.screen_width), dtype=np.float32)
         
     def estimate_gaze_point(self, eye_x, eye_y, eye_w, eye_h, frame, face_x, face_y, face_w, face_h):
         """
@@ -119,7 +136,14 @@ class GazeAnalyzer:
         # Initialize heatmap based on screen dimensions, not camera dimensions
         if self.heatmap is None:
             self.heatmap = np.zeros((self.screen_height, self.screen_width), dtype=np.float32)
+            self.temporal_heatmap = np.zeros((self.screen_height, self.screen_width), dtype=np.float32)
             print(f"Initialized heatmap with screen dimensions {self.screen_width}x{self.screen_height}")
+
+        # Apply temporal decay to the temporal heatmap
+        self._apply_temporal_decay()
+        
+        # Check for auto-reset
+        self._check_auto_reset()
 
         # Process all detected eyes
         if len(eyes) > 0 and frame is not None and face is not None:
@@ -137,52 +161,112 @@ class GazeAnalyzer:
             if len(gaze_points) == 2:
                 gaze_x = (gaze_points[0][0] + gaze_points[1][0]) // 2
                 gaze_y = (gaze_points[0][1] + gaze_points[1][1]) // 2
-                
-                # Update the heatmap at the average gaze point
-                radius = 50  # Radius of influence in pixels
-                
-                # Define the region to update
-                x_start = max(0, gaze_x - radius)
-                y_start = max(0, gaze_y - radius)
-                x_end = min(self.screen_width, gaze_x + radius)
-                y_end = min(self.screen_height, gaze_y + radius)
-                
-                # Create a gaussian around the gaze point
-                for y in range(y_start, y_end):
-                    for x in range(x_start, x_end):
-                        # Calculate distance from gaze point (squared)
-                        dist_sq = (x - gaze_x)**2 + (y - gaze_y)**2
-                        # Add more weight to center points with a gaussian
-                        weight = np.exp(-dist_sq / (2 * (radius/3)**2)) * 5
-                        self.heatmap[y, x] += weight
-                
-                # Print debug info
-                print(f"Updated heatmap for average gaze point at screen coordinates ({gaze_x}, {gaze_y})")
-                print(f"Current heatmap max value: {np.max(self.heatmap)}")
+                self._update_heatmaps_with_point(gaze_x, gaze_y)
             else:
                 # Otherwise, update for each eye individually
                 for gaze_x, gaze_y in gaze_points:
-                    # Update the heatmap at the gaze point
-                    radius = 50  # Radius of influence in pixels
-                    
-                    # Define the region to update
-                    x_start = max(0, gaze_x - radius)
-                    y_start = max(0, gaze_y - radius)
-                    x_end = min(self.screen_width, gaze_x + radius)
-                    y_end = min(self.screen_height, gaze_y + radius)
-                    
-                    # Create a gaussian around the gaze point
-                    for y in range(y_start, y_end):
-                        for x in range(x_start, x_end):
-                            # Calculate distance from gaze point (squared)
-                            dist_sq = (x - gaze_x)**2 + (y - gaze_y)**2
-                            # Add more weight to center points with a gaussian
-                            weight = np.exp(-dist_sq / (2 * (radius/3)**2)) * 5
-                            self.heatmap[y, x] += weight
-                    
-                    # Print debug info
-                    print(f"Updated heatmap for gaze point at screen coordinates ({gaze_x}, {gaze_y})")
-                    print(f"Current heatmap max value: {np.max(self.heatmap)}")
+                    self._update_heatmaps_with_point(gaze_x, gaze_y)
+
+    def update_heatmap_with_point(self, gaze_x, gaze_y):
+        """
+        Update the heatmap with a single gaze point.
+        This method is used by the MediaPipe face mesh implementation.
+        
+        Args:
+            gaze_x: X-coordinate of the gaze point (in screen coordinates)
+            gaze_y: Y-coordinate of the gaze point (in screen coordinates)
+        """
+        # Initialize heatmap if it doesn't exist
+        if self.heatmap is None:
+            self.heatmap = np.zeros((self.screen_height, self.screen_width), dtype=np.float32)
+            self.temporal_heatmap = np.zeros((self.screen_height, self.screen_width), dtype=np.float32)
+            print(f"Initialized heatmap with screen dimensions {self.screen_width}x{self.screen_height}")
+        
+        # Apply temporal decay to the temporal heatmap
+        self._apply_temporal_decay()
+        
+        # Check for auto-reset
+        self._check_auto_reset()
+        
+        # Update heatmaps with the gaze point
+        self._update_heatmaps_with_point(gaze_x, gaze_y)
+        
+    def _update_heatmaps_with_point(self, gaze_x, gaze_y):
+        """
+        Internal method to update both cumulative and temporal heatmaps with a gaze point.
+        
+        Args:
+            gaze_x: X-coordinate of the gaze point
+            gaze_y: Y-coordinate of the gaze point
+        """
+        # Ensure coordinates are within screen bounds
+        gaze_x = max(0, min(gaze_x, self.screen_width - 1))
+        gaze_y = max(0, min(gaze_y, self.screen_height - 1))
+        
+        # Create a temporary heatmap for this gaze point
+        single_point = np.zeros((self.screen_height, self.screen_width), dtype=np.float32)
+        
+        # Add a single point with high intensity
+        single_point[gaze_y, gaze_x] = 255
+        
+        # Apply Gaussian blur for a more natural, smooth heatmap point
+        # Adjust kernel size for different smooth levels
+        blurred_point = cv2.GaussianBlur(single_point, (self.blur_radius, self.blur_radius), 0)
+        
+        # Normalize the blurred point to maintain consistent intensity
+        if np.max(blurred_point) > 0:  # Avoid division by zero
+            blurred_point = blurred_point * (255 / np.max(blurred_point)) * 0.2  # Scale factor for intensity
+        
+        # Add to both heatmaps
+        self.heatmap += blurred_point
+        self.temporal_heatmap += blurred_point
+        
+        # Print debug info
+        print(f"Updated heatmap for gaze point at screen coordinates ({gaze_x}, {gaze_y})")
+        print(f"Current heatmap max value: {np.max(self.heatmap):.2f}")
+    
+    def _apply_temporal_decay(self):
+        """Apply temporal decay to the temporal heatmap"""
+        if self.temporal_heatmap is not None and self.decay_factor < 1.0:
+            self.temporal_heatmap *= self.decay_factor
+    
+    def _check_auto_reset(self):
+        """Check if it's time for an automatic heatmap reset"""
+        if self.auto_reset_interval > 0:
+            current_time = time.time()
+            if current_time - self.last_reset_time > self.auto_reset_interval:
+                self.reset_heatmap()
+                print(f"Auto-reset heatmap after {self.auto_reset_interval} seconds")
+    
+    def get_visualization_heatmap(self, use_temporal=True, colormap=cv2.COLORMAP_JET):
+        """
+        Generate a visualization-ready heatmap.
+        
+        Args:
+            use_temporal: Whether to use the temporal heatmap (True) or cumulative heatmap (False)
+            colormap: The OpenCV colormap to use
+            
+        Returns:
+            Colored heatmap ready for visualization or overlay
+        """
+        # Use the temporal or cumulative heatmap
+        source_heatmap = self.temporal_heatmap if use_temporal and self.temporal_heatmap is not None else self.heatmap
+        
+        if source_heatmap is None or np.max(source_heatmap) == 0:
+            # Return an empty colored heatmap if there's no data
+            empty = np.zeros((self.screen_height, self.screen_width, 3), dtype=np.uint8)
+            return empty
+        
+        # Normalize the heatmap to 0-255 range
+        heatmap_normalized = cv2.normalize(source_heatmap, None, 0, 255, cv2.NORM_MINMAX)
+        
+        # Apply a final Gaussian blur for smoother appearance
+        heatmap_normalized = cv2.GaussianBlur(heatmap_normalized, (5, 5), 0)
+        
+        # Convert to uint8 and apply colormap
+        heatmap_colored = cv2.applyColorMap(heatmap_normalized.astype(np.uint8), colormap)
+        
+        return heatmap_colored
 
     def save_results(self):
         # Check if heatmap exists and has data
@@ -191,17 +275,23 @@ class GazeAnalyzer:
             self.frame_count += 1
             return
             
-        # Normalize the heatmap
-        heatmap_normalized = cv2.normalize(self.heatmap, None, 0, 255, cv2.NORM_MINMAX)
-        heatmap_colored = cv2.applyColorMap(heatmap_normalized.astype(np.uint8), cv2.COLORMAP_JET)
+        # Save both cumulative and temporal heatmaps
+        cumulative_heatmap = self.get_visualization_heatmap(use_temporal=False)
+        temporal_heatmap = self.get_visualization_heatmap(use_temporal=True)
+        
+        # Save the heatmaps
+        cumulative_path = os.path.join(self.output_dir, 'gaze_heatmaps', f'cumulative_heatmap_{self.frame_count}.png')
+        temporal_path = os.path.join(self.output_dir, 'gaze_heatmaps', f'temporal_heatmap_{self.frame_count}.png')
+        
+        cv2.imwrite(cumulative_path, cumulative_heatmap)
+        cv2.imwrite(temporal_path, temporal_heatmap)
 
-        # Save the heatmap
-        heatmap_path = os.path.join(self.output_dir, 'gaze_heatmaps', f'heatmap_{self.frame_count}.png')
-        cv2.imwrite(heatmap_path, heatmap_colored)
-
-        # Log the heatmap path
+        # Log the heatmap paths
         log_path = os.path.join(self.output_dir, 'logs', 'gaze_log.txt')
         with open(log_path, 'a') as log_file:
-            log_file.write(f"Frame {self.frame_count}: {heatmap_path} (max value: {np.max(self.heatmap):.2f})\n")
+            log_file.write(f"Frame {self.frame_count}:\n")
+            log_file.write(f"  Cumulative: {cumulative_path} (max: {np.max(self.heatmap):.2f})\n")
+            log_file.write(f"  Temporal: {temporal_path} (max: {np.max(self.temporal_heatmap):.2f})\n")
+            log_file.write(f"  Time since reset: {time.time() - self.last_reset_time:.2f}s\n\n")
 
         self.frame_count += 1 
