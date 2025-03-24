@@ -2,44 +2,7 @@ import cv2
 from eye_tracker import EyeTracker
 import numpy as np
 import argparse
-
-def create_test_screen(width=1920, height=1080):
-    """Create a test screen with some UI elements to track gaze on"""
-    screen = np.ones((height, width, 3), dtype=np.uint8) * 255  # White background
-    
-    # Add some UI elements
-    # Header
-    cv2.rectangle(screen, (0, 0), (width, 100), (200, 200, 200), -1)
-    cv2.putText(screen, "Customer Attention Analysis", (width//2 - 200, 60), 
-               cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 0), 2)
-    
-    # Left sidebar
-    cv2.rectangle(screen, (0, 100), (300, height), (230, 230, 230), -1)
-    
-    # Main content area - add some product images or UI elements
-    # Product 1
-    cv2.rectangle(screen, (400, 200), (700, 500), (0, 0, 255), 2)
-    cv2.putText(screen, "Product A", (500, 350), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-    
-    # Product 2
-    cv2.rectangle(screen, (800, 200), (1100, 500), (0, 255, 0), 2)
-    cv2.putText(screen, "Product B", (900, 350), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-    
-    # Product 3
-    cv2.rectangle(screen, (1200, 200), (1500, 500), (255, 0, 0), 2)
-    cv2.putText(screen, "Product C", (1300, 350), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-    
-    # Bottom area - add some buttons
-    cv2.rectangle(screen, (400, 600), (700, 700), (100, 100, 200), -1)
-    cv2.putText(screen, "Buy Now", (500, 660), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    
-    cv2.rectangle(screen, (800, 600), (1100, 700), (100, 200, 100), -1)
-    cv2.putText(screen, "Add to Cart", (850, 660), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    
-    cv2.rectangle(screen, (1200, 600), (1500, 700), (200, 100, 100), -1)
-    cv2.putText(screen, "More Info", (1300, 660), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    
-    return screen
+from screen_layout import ScreenLayoutManager
 
 def main():
     # Setup argument parser
@@ -52,18 +15,23 @@ def main():
                         help='Use temporal heatmap by default (shows recent focus)')
     parser.add_argument('--auto-reset', type=int, default=30,
                         help='Auto-reset heatmap after this many seconds (0 to disable)')
+    parser.add_argument('--layout', type=str, default='default',
+                        help='Initial screen layout (default, grid, product_comparison, checkout)')
     
     args = parser.parse_args()
     
     # Initialize the eye tracker
     tracker = EyeTracker(use_mediapipe=not args.traditional)
     
-    # Create a simulated screen
-    screen_width = 1920
-    screen_height = 1080
-    simulated_screen = create_test_screen(screen_width, screen_height)
+    # Create the screen layout manager and initialize the first layout
+    screen_manager = ScreenLayoutManager()
+    
+    # Set the initial layout
+    simulated_screen = screen_manager.create_layout(args.layout)
     
     # Set the screen dimensions in the gaze analyzer
+    screen_width = screen_manager.base_width
+    screen_height = screen_manager.base_height
     tracker.gaze_analyzer.set_screen_dimensions(screen_width, screen_height)
     
     # Configure heatmap settings
@@ -72,13 +40,19 @@ def main():
     # Track which heatmap to display (temporal or cumulative)
     show_temporal = args.temporal
     
+    # Track whether to show analytics overlay
+    show_analytics = False
+    
     # Help text for the keyboard controls
     help_text = [
         "Keyboard Controls:",
         "  Q: Quit",
         "  R: Reset heatmap",
         "  T: Toggle between temporal and cumulative heatmap",
-        "  H: Toggle help text"
+        "  H: Toggle help text",
+        "  L: Switch to next layout",
+        "  A: Toggle analytics overlay",
+        "  S: Save current analytics"
     ]
     show_help = True
 
@@ -97,6 +71,7 @@ def main():
         print("Using traditional eye tracking method")
     
     print(f"Using {'temporal' if show_temporal else 'cumulative'} heatmap for display")
+    print(f"Initial layout: {args.layout}")
     print(f"Auto-reset interval: {args.auto_reset} seconds (0 = disabled)")
     print("Press 'h' to toggle help text")
 
@@ -128,6 +103,10 @@ def main():
                 
             cv2.putText(frame_with_info, f"Max: {max_val:.2f}", (10, 90), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            
+            # Show layout info
+            cv2.putText(frame_with_info, f"Layout: {screen_manager.current_layout}", (10, 120), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         # Display help text if enabled
         if show_help:
@@ -139,19 +118,59 @@ def main():
         
         cv2.imshow('Eye Tracking', frame_with_info)
         
+        # Get the last estimated gaze point if available
+        last_gaze_x, last_gaze_y = None, None
+        
+        if tracker.use_mediapipe:
+            # For MediaPipe version
+            if hasattr(tracker, 'face_mesh_tracker') and hasattr(tracker.face_mesh_tracker, 'calculate_normalized_gaze'):
+                # Get the latest processed frame data
+                landmarks, iris_landmarks, head_pose = getattr(tracker, '_last_processed_data', (None, None, None))
+                
+                if iris_landmarks is not None and head_pose is not None:
+                    normalized_gaze = tracker.face_mesh_tracker.calculate_normalized_gaze(iris_landmarks, head_pose)
+                    if normalized_gaze is not None:
+                        last_gaze_x = int(normalized_gaze[0] * screen_width)
+                        last_gaze_y = int(normalized_gaze[1] * screen_height)
+        else:
+            # For traditional version - try to get the last gaze points
+            if hasattr(tracker, '_last_gaze_points') and getattr(tracker, '_last_gaze_points', None):
+                gaze_points = getattr(tracker, '_last_gaze_points')
+                if len(gaze_points) == 2:  # If we have two eyes
+                    # Use the average gaze point
+                    last_gaze_x = (gaze_points[0][0] + gaze_points[1][0]) // 2
+                    last_gaze_y = (gaze_points[0][1] + gaze_points[1][1]) // 2
+                elif len(gaze_points) == 1:  # If we have one eye
+                    last_gaze_x, last_gaze_y = gaze_points[0]
+        
+        # Update region analytics if we have a gaze point
+        if last_gaze_x is not None and last_gaze_y is not None:
+            screen_manager.update_region_analytics(last_gaze_x, last_gaze_y)
+        
         # Display the simulated screen with gaze heatmap
         if tracker.gaze_analyzer.heatmap is not None:
+            # Determine which screen to use as a base
+            if show_analytics:
+                screen_base = screen_manager.get_analytics_overlay()
+            else:
+                screen_base = screen_manager.current_screen
+                
             # Get the appropriate heatmap based on current mode
             heatmap_display = tracker.gaze_analyzer.get_visualization_heatmap(use_temporal=show_temporal)
             
             if heatmap_display is not None:
                 # Create a blended view of the screen and heatmap
-                screen_with_heatmap = cv2.addWeighted(simulated_screen, 0.7, heatmap_display, 0.3, 0)
+                screen_with_heatmap = cv2.addWeighted(screen_base, 0.7, heatmap_display, 0.3, 0)
                 
                 # Add mode indicator to the heatmap display
-                heatmap_title = f"{('Temporal' if show_temporal else 'Cumulative')} Heatmap"
+                heatmap_title = f"{('Temporal' if show_temporal else 'Cumulative')} Heatmap - {screen_manager.current_layout.capitalize()}"
                 cv2.putText(screen_with_heatmap, heatmap_title, (30, 30), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                
+                # Draw a marker at the current gaze position if available
+                if last_gaze_x is not None and last_gaze_y is not None:
+                    cv2.circle(screen_with_heatmap, (last_gaze_x, last_gaze_y), 15, (0, 0, 255), -1)
+                    cv2.circle(screen_with_heatmap, (last_gaze_x, last_gaze_y), 15, (255, 255, 255), 2)
                 
                 # Resize for display if too large
                 display_width = min(screen_width, 1280)
@@ -164,8 +183,8 @@ def main():
                 # Just show the simulated screen if no heatmap data
                 display_width = min(screen_width, 1280)
                 display_height = int(display_width * screen_height / screen_width)
-                simulated_screen_resized = cv2.resize(simulated_screen, (display_width, display_height))
-                cv2.imshow('Screen with Gaze Heatmap', simulated_screen_resized)
+                screen_resized = cv2.resize(screen_base, (display_width, display_height))
+                cv2.imshow('Screen with Gaze Heatmap', screen_resized)
 
         # Check for key presses
         key = cv2.waitKey(1) & 0xFF
@@ -187,7 +206,25 @@ def main():
         # Toggle help text on 'h' key
         elif key == ord('h'):
             show_help = not show_help
+            
+        # Switch to next layout on 'l' key
+        elif key == ord('l'):
+            simulated_screen = screen_manager.next_layout()
+            print(f"Switched to layout: {screen_manager.current_layout}")
+            
+        # Toggle analytics overlay on 'a' key
+        elif key == ord('a'):
+            show_analytics = not show_analytics
+            print(f"Analytics overlay {'enabled' if show_analytics else 'disabled'}")
+            
+        # Save analytics on 's' key
+        elif key == ord('s'):
+            csv_path, img_path = screen_manager.save_analytics()
+            print(f"Saved analytics to {csv_path} and heatmap to {img_path}")
 
+    # Save final analytics before exiting
+    screen_manager.save_analytics()
+    
     cap.release()
     cv2.destroyAllWindows()
 

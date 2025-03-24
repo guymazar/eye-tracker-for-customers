@@ -13,6 +13,12 @@ This project, "Understanding Customer Attention through Eye Tracking," is design
   - Cumulative heatmaps for overall patterns
   - Gaussian blur for natural, intuitive visualization
 - Interactive controls for heatmap management
+- Multiple screen layouts for UI/UX testing:
+  - Default product showcase
+  - Grid layout with labeled zones
+  - Product comparison matrix
+  - Checkout page
+- Region-based analytics with attention metrics
 - Modular and extensible codebase
 
 ## Folder Structure
@@ -24,11 +30,15 @@ EyeTrackingProject/
 │   │── face_detection.py   # Face and eye detection utilities
 │   │── face_mesh_tracker.py # MediaPipe face mesh implementation
 │   │── gaze_analysis.py    # Gaze analysis and heatmap generation
+│   │── screen_layout.py    # Screen layout manager for simulated interfaces
 │   │── utils.py            # Helper functions
 │
 │── models/                 # Pre-trained models (Haar cascades, etc.)
 │── data/                   # Sample images/videos for testing
 │── output/                 # Results and logs (heatmaps, logs, etc.)
+│   │── gaze_heatmaps/      # Saved heatmap images
+│   │── logs/               # Log files
+│   │── screen_analytics/   # Region-based analytics data and visualizations
 │── tests/                  # Unit tests
 │── docs/                   # Documentation
 │── requirements.txt        # Dependencies
@@ -63,14 +73,19 @@ python src/main.py --traditional
 python src/main.py --temporal
 ```
 
-5. To disable automatic heatmap reset (default: 30 seconds):
+5. To specify a starting layout:
+```bash
+python src/main.py --layout grid  # Options: default, grid, product_comparison, checkout
+```
+
+6. To disable automatic heatmap reset (default: 30 seconds):
 ```bash
 python src/main.py --auto-reset 0
 ```
 
-6. Combine multiple options:
+7. Combine multiple options:
 ```bash
-python src/main.py --video data/test_video.mp4 --temporal --auto-reset 60
+python src/main.py --video data/test_video.mp4 --temporal --layout product_comparison --auto-reset 60
 ```
 
 ## Keyboard Controls
@@ -79,10 +94,31 @@ During application execution, you can use the following keyboard controls:
 - **R**: Reset the heatmap manually
 - **T**: Toggle between temporal and cumulative heatmap displays
 - **H**: Toggle help text display
+- **L**: Switch to the next screen layout
+- **A**: Toggle analytics overlay (showing region-based attention metrics)
+- **S**: Save current analytics to CSV and image files
 
 ## Understanding the Heatmaps
 - **Temporal Heatmap**: Shows recent attention patterns with older points fading over time. This is useful for tracking the current focus of attention.
 - **Cumulative Heatmap**: Shows the sum of all gaze points since the last reset. This is useful for identifying overall patterns over time.
+
+## Screen Layouts
+The application includes several screen layouts for testing different UI designs:
+
+1. **Default Layout**: Basic product showcase with three products and action buttons
+2. **Grid Layout**: A 3x3 grid with labeled zones (A through I) for basic attention mapping
+3. **Product Comparison**: A matrix layout comparing three products across different attributes (price, features, etc.)
+4. **Checkout Page**: A simulated checkout page with cart summary, customer information, and payment options
+
+Each layout supports region-based analytics, tracking which UI elements receive the most attention.
+
+## Analytics
+The system tracks attention metrics for each defined region in the current layout:
+- **Gaze Points**: The number of times a user looked at a region
+- **Total Time**: The accumulated time spent looking at a region
+- **Heatmap Overlay**: Visualizes attention intensity across different UI elements
+
+Analytics can be saved to CSV files for later analysis, along with heatmap images.
 
 ## License
 This project is for academic and research purposes.
@@ -123,6 +159,7 @@ python src/main.py --video data/test_video.mp4
 ## Step 5: Viewing Outputs
 - Both temporal and cumulative heatmaps are stored in the `output/gaze_heatmaps/` folder.
 - Logs are available in the `output/logs/` directory.
+- Region-based analytics are saved to `output/screen_analytics/`.
 
 ## Step 6: Running Tests
 To validate the implementation, run:

@@ -19,6 +19,10 @@ class EyeTracker:
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5
             )
+        
+        # Store the last processed data for external access
+        self._last_processed_data = (None, None, None)  # (landmarks, iris_landmarks, head_pose)
+        self._last_gaze_points = []  # List of (x, y) gaze points from traditional tracking
 
     def process_frame(self, frame):
         self.frame_count += 1
@@ -31,6 +35,9 @@ class EyeTracker:
         if self.use_mediapipe:
             # Use Face Mesh for more precise eye tracking
             landmarks, iris_landmarks, head_pose = self.face_mesh_tracker.process_frame(frame)
+            
+            # Store the results for external access
+            self._last_processed_data = (landmarks, iris_landmarks, head_pose)
             
             # If no face detected, return early
             if landmarks is None:
@@ -66,6 +73,9 @@ class EyeTracker:
             # Original implementation for backward compatibility
             # Detect faces and eyes
             faces = self.face_detector.detect_faces(frame)
+            
+            # Clear last gaze points
+            self._last_gaze_points = []
             
             # If no faces detected, return early
             if len(faces) == 0:
@@ -113,6 +123,9 @@ class EyeTracker:
                         ex, ey, ew, eh, frame, x, y, w, h
                     )
                     gaze_points.append((gaze_x, gaze_y, ex + ew // 2, ey + eh // 2))  # (gaze_x, gaze_y, eye_center_x, eye_center_y)
+                    
+                    # Store the gaze point for external access
+                    self._last_gaze_points.append((gaze_x, gaze_y))
                     
                     # Draw a line from eye center to estimated gaze direction
                     eye_center_x = ex + ew // 2
