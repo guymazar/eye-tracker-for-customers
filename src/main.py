@@ -314,8 +314,20 @@ def main():
             cv2.putText(overlay, "Press ESC to skip calibration", (screen_width // 4, screen_height - 50),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 150, 150), 1)
             
-            # Blend camera feed with overlay
-            opacity = 0.2  # Make camera feed very faint
+            # Add this line before line 317 (before the blending code)
+            opacity = 0.7  # Define opacity for blending (70% frame, 30% overlay)
+            
+            # Before blending, ensure overlay has the same dimensions as frame_with_landmarks
+            if overlay.shape != frame_with_landmarks.shape:
+                overlay = cv2.resize(overlay, (frame_with_landmarks.shape[1], frame_with_landmarks.shape[0]))
+                
+                # If channel count is different, convert overlay to match frame_with_landmarks
+                if len(overlay.shape) != len(frame_with_landmarks.shape):
+                    if len(frame_with_landmarks.shape) == 3:  # Color image
+                        overlay = cv2.cvtColor(overlay, cv2.COLOR_GRAY2BGR)
+                    else:  # Grayscale image
+                        overlay = cv2.cvtColor(overlay, cv2.COLOR_BGR2GRAY)
+            
             display_frame = cv2.addWeighted(frame_with_landmarks, opacity, overlay, 1 - opacity, 0)
             
             # Show the combined frame
@@ -516,7 +528,8 @@ def main():
             
             if heatmap_display is not None:
                 # Create a blended view of the screen and heatmap
-                screen_with_heatmap = cv2.addWeighted(screen_base, 0.7, heatmap_display, 0.3, 0)
+                opacity = 0.7  # Define opacity for blending (70% frame, 30% overlay)
+                screen_with_heatmap = cv2.addWeighted(screen_base, opacity, heatmap_display, 1 - opacity, 0)
                 
                 # Add mode indicator to the heatmap display
                 tracking_mode = "Traditional (Fallback)" if using_fallback else "MediaPipe" if tracker.use_mediapipe else "Traditional"

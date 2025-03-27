@@ -1,0 +1,75 @@
+Frame 0:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_0.png (max: 97.80)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_0.png (max: 91.10)
+  Time since reset: 2.00s
+
+Frame 1:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_1.png (max: 155.87)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_1.png (max: 95.08)
+  Time since reset: 4.02s
+
+Frame 2:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_2.png (max: 155.87)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_2.png (max: 83.16)
+  Time since reset: 6.02s
+
+Frame 3:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_3.png (max: 155.87)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_3.png (max: 106.74)
+  Time since reset: 8.02s
+
+Frame 4:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_4.png (max: 181.09)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_4.png (max: 125.35)
+  Time since reset: 10.02s
+
+Frame 5:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_5.png (max: 184.23)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_5.png (max: 106.77)
+  Time since reset: 12.02s
+
+Frame 6:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_6.png (max: 184.23)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_6.png (max: 58.24)
+  Time since reset: 14.05s
+
+Frame 7:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_7.png (max: 184.23)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_7.png (max: 89.06)
+  Time since reset: 16.05s
+
+Frame 8:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_8.png (max: 184.23)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_8.png (max: 103.83)
+  Time since reset: 18.05s
+
+Frame 9:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_9.png (max: 51.00)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_9.png (max: 51.00)
+  Time since reset: 0.03s
+
+Frame 10:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_10.png (max: 142.23)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_10.png (max: 91.25)
+  Time since reset: 2.04s
+
+Frame 11:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_11.png (max: 142.23)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_11.png (max: 133.54)
+  Time since reset: 4.03s
+
+Frame 12:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_12.png (max: 142.23)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_12.png (max: 90.96)
+  Time since reset: 6.03s
+
+Frame 13:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_13.png (max: 142.23)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_13.png (max: 84.70)
+  Time since reset: 8.03s
+
+Frame 14:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_14.png (max: 142.23)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_14.png (max: 101.71)
+  Time since reset: 10.10s
+
