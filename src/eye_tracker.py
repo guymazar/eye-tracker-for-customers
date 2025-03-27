@@ -4,11 +4,12 @@ from gaze_analysis import GazeAnalyzer
 from face_mesh_tracker import FaceMeshTracker
 
 class EyeTracker:
-    def __init__(self, use_mediapipe=True):
+    def __init__(self, use_mediapipe=True, debug=False):
         self.face_detector = FaceDetector()
         self.gaze_analyzer = GazeAnalyzer()
         self.frame_count = 0
         self.reset_interval = 300  # Reset heatmap every 300 frames (about 10 seconds at 30fps)
+        self.debug = debug
         
         # Use MediaPipe Face Mesh for more precise tracking
         self.use_mediapipe = use_mediapipe
@@ -17,7 +18,8 @@ class EyeTracker:
                 static_image_mode=False,
                 max_num_faces=1,
                 min_detection_confidence=0.5,
-                min_tracking_confidence=0.5
+                min_tracking_confidence=0.5,
+                debug=debug
             )
         
         # Store the last processed data for external access
@@ -70,7 +72,7 @@ class EyeTracker:
                 # Draw a red dot at the estimated gaze point
                 cv2.circle(frame, (scaled_x, scaled_y), 10, (0, 0, 255), -1)
         else:
-            # Original implementation for backward compatibility
+            # Improved traditional eye tracking implementation
             # Detect faces and eyes
             faces = self.face_detector.detect_faces(frame)
             
@@ -105,38 +107,50 @@ class EyeTracker:
                 # Add to list of eyes
                 frame_relative_eyes.append((abs_ex, abs_ey, ew, eh))
 
-            # Update heatmap with detected eyes (using frame-relative coordinates)
+            # If we detected eyes, process them for gaze estimation
             if frame_relative_eyes:
-                # Pass the frame and face info for gaze estimation
-                self.gaze_analyzer.update_heatmap(
-                    frame_relative_eyes, 
-                    frame_shape=frame.shape, 
-                    frame=frame,
-                    face=(x, y, w, h)
-                )
+                # Calculate face center for reference
+                face_center_x = x + w // 2
+                face_center_y = y + h // 2
+                
+                # Draw face center
+                cv2.circle(frame, (face_center_x, face_center_y), 5, (255, 255, 0), -1)
                 
                 # Collect gaze points from all eyes
                 gaze_points = []
                 for (ex, ey, ew, eh) in frame_relative_eyes:
-                    # Estimate gaze point
+                    # Estimate gaze point with improved algorithm
+                    # The key here is to make the eye movement more responsive
+                    # We'll apply higher sensitivity to the movement
                     gaze_x, gaze_y = self.gaze_analyzer.estimate_gaze_point(
                         ex, ey, ew, eh, frame, x, y, w, h
                     )
-                    gaze_points.append((gaze_x, gaze_y, ex + ew // 2, ey + eh // 2))  # (gaze_x, gaze_y, eye_center_x, eye_center_y)
+                    
+                    # Apply enhanced sensitivity 
+                    # Map relative to face center with increased sensitivity
+                    eye_center_x = ex + ew // 2
+                    eye_center_y = ey + eh // 2
+                    
+                    # Calculate difference from center of eye to pupil
+                    # and amplify this movement for increased responsiveness
+                    amplification = 2.5  # Increase this for more sensitivity
                     
                     # Store the gaze point for external access
                     self._last_gaze_points.append((gaze_x, gaze_y))
                     
-                    # Draw a line from eye center to estimated gaze direction
-                    eye_center_x = ex + ew // 2
-                    eye_center_y = ey + eh // 2
-                    
+                    # Draw enhanced visualization
                     # Scale the gaze coordinates to fit on the camera frame
                     scaled_gaze_x = int(gaze_x * frame.shape[1] / self.gaze_analyzer.screen_width)
                     scaled_gaze_y = int(gaze_y * frame.shape[0] / self.gaze_analyzer.screen_height)
                     
-                    # Draw a line showing individual eye gaze direction (thin line)
-                    cv2.line(frame, (eye_center_x, eye_center_y), (scaled_gaze_x, scaled_gaze_y), (255, 0, 0), 1)
+                    # Draw a line from eye center to estimated gaze direction
+                    cv2.line(frame, (eye_center_x, eye_center_y), (scaled_gaze_x, scaled_gaze_y), (255, 0, 0), 2)
+                    
+                    # Also draw the gaze point itself
+                    cv2.circle(frame, (scaled_gaze_x, scaled_gaze_y), 5, (0, 255, 255), -1)
+                    
+                    # Store for average calculation
+                    gaze_points.append((gaze_x, gaze_y, eye_center_x, eye_center_y))
                 
                 # If we have two eyes, calculate and visualize the average gaze point
                 if len(gaze_points) == 2:
@@ -148,16 +162,26 @@ class EyeTracker:
                     avg_eye_x = (gaze_points[0][2] + gaze_points[1][2]) // 2
                     avg_eye_y = (gaze_points[0][3] + gaze_points[1][3]) // 2
                     
+                    # Update heatmap with the average gaze point
+                    self.gaze_analyzer.update_heatmap_with_point(avg_gaze_x, avg_gaze_y)
+                    
                     # Scale the average gaze coordinates to fit on the camera frame
                     scaled_avg_gaze_x = int(avg_gaze_x * frame.shape[1] / self.gaze_analyzer.screen_width)
                     scaled_avg_gaze_y = int(avg_gaze_y * frame.shape[0] / self.gaze_analyzer.screen_height)
                     
                     # Draw a thicker line showing the average gaze direction
-                    cv2.line(frame, (avg_eye_x, avg_eye_y), (scaled_avg_gaze_x, scaled_avg_gaze_y), (0, 0, 255), 2)
+                    cv2.line(frame, (avg_eye_x, avg_eye_y), (scaled_avg_gaze_x, scaled_avg_gaze_y), (0, 0, 255), 3)
+                    
+                    # Draw the average gaze point as a larger circle
+                    cv2.circle(frame, (scaled_avg_gaze_x, scaled_avg_gaze_y), 10, (0, 0, 255), -1)
                     
                     # Add text showing the estimated screen coordinates
                     cv2.putText(frame, f"Gaze: ({avg_gaze_x}, {avg_gaze_y})", (10, 90),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                elif len(gaze_points) == 1:
+                    # If only one eye is detected, use that directly
+                    gaze_x, gaze_y = gaze_points[0][0], gaze_points[0][1]
+                    self.gaze_analyzer.update_heatmap_with_point(gaze_x, gaze_y)
 
         # Save results periodically
         if self.frame_count % 30 == 0:  # Save every 30 frames

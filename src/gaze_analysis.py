@@ -63,14 +63,27 @@ class GazeAnalyzer:
         else:
             gray_eye = eye_region
             
-        # Apply better thresholding to isolate the pupil
-        # Use adaptive thresholding instead of global thresholding
+        # Apply improved eye processing
         if eye_w > 20 and eye_h > 20:  # Only if eye region is big enough
-            blurred = cv2.GaussianBlur(gray_eye, (5, 5), 0)
+            # Apply histogram equalization to enhance pupil contrast
+            gray_eye = cv2.equalizeHist(gray_eye)
+            
+            # Apply a bilateral filter to reduce noise while preserving edges
+            gray_eye = cv2.bilateralFilter(gray_eye, 9, 75, 75)
+            
+            # Apply a Gaussian blur
+            blurred = cv2.GaussianBlur(gray_eye, (7, 7), 0)
+            
+            # Use adaptive thresholding for more reliable pupil detection
             thresholded = cv2.adaptiveThreshold(
                 blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                 cv2.THRESH_BINARY_INV, 11, 2
             )
+            
+            # Apply morphology operations to clean up the threshold result
+            kernel = np.ones((3, 3), np.uint8)
+            thresholded = cv2.morphologyEx(thresholded, cv2.MORPH_OPEN, kernel, iterations=1)
+            thresholded = cv2.morphologyEx(thresholded, cv2.MORPH_CLOSE, kernel, iterations=2)
         else:
             # Fallback to simple thresholding for small regions
             _, thresholded = cv2.threshold(gray_eye, 50, 255, cv2.THRESH_BINARY_INV)
@@ -83,18 +96,34 @@ class GazeAnalyzer:
             rel_pupil_x = 0.5
             rel_pupil_y = 0.5
         else:
-            # Filter contours by size to avoid noise
-            valid_contours = [c for c in contours if cv2.contourArea(c) > 5]
+            # Filter contours by size to avoid noise and select the most likely pupil
+            min_area = 5  # Minimum contour area to consider
+            valid_contours = [c for c in contours if cv2.contourArea(c) > min_area]
             
             if not valid_contours:
                 rel_pupil_x = 0.5
                 rel_pupil_y = 0.5
             else:
-                # Find the largest contour (likely the pupil)
-                pupil_contour = max(valid_contours, key=cv2.contourArea)
+                # Find the most circular contour - likely to be the pupil
+                best_pupil_contour = None
+                best_circularity = 0
+                
+                for contour in valid_contours:
+                    area = cv2.contourArea(contour)
+                    perimeter = cv2.arcLength(contour, True)
+                    if perimeter > 0:
+                        # Circularity = 4π*area/perimeter²
+                        circularity = 4 * np.pi * area / (perimeter * perimeter)
+                        if circularity > best_circularity:
+                            best_circularity = circularity
+                            best_pupil_contour = contour
+                
+                # If we still don't have a good contour, use the largest one
+                if best_pupil_contour is None:
+                    best_pupil_contour = max(valid_contours, key=cv2.contourArea)
                 
                 # Get the center of the pupil
-                M = cv2.moments(pupil_contour)
+                M = cv2.moments(best_pupil_contour)
                 if M["m00"] != 0:
                     pupil_x = int(M["m10"] / M["m00"])
                     pupil_y = int(M["m01"] / M["m00"])
@@ -105,6 +134,12 @@ class GazeAnalyzer:
                 # Calculate relative position of pupil within the eye (0-1)
                 rel_pupil_x = pupil_x / eye_w
                 rel_pupil_y = pupil_y / eye_h
+        
+        # Enhanced calibration factors for improved responsiveness
+        # Increase these values to make eye tracking more sensitive
+        # Current default values significantly increased to make eyes more responsive
+        x_scale_factor = 1.5  # Reduced from 3.0 to 1.5 for less horizontal sensitivity
+        y_scale_factor = 1.2  # Reduced from 2.5 to 1.2 for less vertical sensitivity
         
         # Adjust for head position/orientation
         face_center_x = face_x + face_w // 2
@@ -117,14 +152,49 @@ class GazeAnalyzer:
         head_offset_x = (face_center_x - frame_center_x) / frame.shape[1]
         head_offset_y = (face_center_y - frame_center_y) / frame.shape[0]
         
-        # Map pupil position to screen coordinates with improved scaling
+        # Map pupil position to screen coordinates with enhanced sensitivity
         # When pupil is to the left in the eye, person is looking right
         # When pupil is to the right in the eye, person is looking left
-        # Apply scaling factors and offsets for better accuracy
-        screen_x = int(((1 - rel_pupil_x) * self.screen_width * self.x_scale_factor - 
-                       head_offset_x * 300) + self.x_offset)
-        screen_y = int((rel_pupil_y * self.screen_height * self.y_scale_factor + 
-                       head_offset_y * 150) + self.y_offset)
+        
+        # Map relative pupil position to [-0.5, 0.5] range for easier manipulation
+        centered_pupil_x = rel_pupil_x - 0.5
+        centered_pupil_y = rel_pupil_y - 0.5
+        
+        # Apply non-linear transformation to enhance sensitivity but more gently
+        # Using power 0.9 instead of 0.8 for more gradual response
+        enhanced_pupil_x = np.sign(centered_pupil_x) * np.power(abs(centered_pupil_x), 0.9)
+        enhanced_pupil_y = np.sign(centered_pupil_y) * np.power(abs(centered_pupil_y), 0.9)
+        
+        # Map back to [0, 1] range but with enhanced sensitivity
+        enhanced_rel_pupil_x = 0.5 - enhanced_pupil_x
+        enhanced_rel_pupil_y = 0.5 + enhanced_pupil_y
+        
+        # Add a deadzone in the center to reduce jitter
+        # If the pupil is very close to center (within 5% of center), treat it as center
+        deadzone = 0.05
+        if abs(centered_pupil_x) < deadzone:
+            enhanced_rel_pupil_x = 0.5
+        if abs(centered_pupil_y) < deadzone:
+            enhanced_rel_pupil_y = 0.5
+        
+        # Final mapping to screen coordinates with head position correction
+        # Reduce the impact of head position by decreasing the multipliers
+        screen_x = int(((enhanced_rel_pupil_x) * self.screen_width * x_scale_factor - 
+                       head_offset_x * 150) + self.x_offset)  # Reduced from 300 to 150
+        screen_y = int((enhanced_rel_pupil_y * self.screen_height * y_scale_factor + 
+                       head_offset_y * 75) + self.y_offset)   # Reduced from 150 to 75
+        
+        # Apply exponential moving average for smoother movement
+        # This adds some lag but reduces jitter significantly
+        if hasattr(self, 'last_screen_x') and hasattr(self, 'last_screen_y'):
+            # Blend with previous position (80% previous, 20% new)
+            smoothing_factor = 0.8
+            screen_x = int(smoothing_factor * self.last_screen_x + (1 - smoothing_factor) * screen_x)
+            screen_y = int(smoothing_factor * self.last_screen_y + (1 - smoothing_factor) * screen_y)
+        
+        # Store current position for next frame
+        self.last_screen_x = screen_x
+        self.last_screen_y = screen_y
         
         # Ensure coordinates are within screen bounds
         screen_x = max(0, min(screen_x, self.screen_width - 1))

@@ -3,6 +3,69 @@ from eye_tracker import EyeTracker
 import numpy as np
 import argparse
 from screen_layout import ScreenLayoutManager
+import time
+import os
+import sys
+import platform
+
+# Fixed screen dimensions - no longer configurable via command line
+SCREEN_WIDTH = 1920
+SCREEN_HEIGHT = 1080
+
+def center_window(window_name, width, height):
+    """Center the OpenCV window on the screen"""
+    # Get screen dimensions - this is a bit of a hack but works on most systems
+    try:
+        # Try to use platform-specific approaches
+        if platform.system() == "Windows":
+            from win32api import GetSystemMetrics
+            screen_width = GetSystemMetrics(0)
+            screen_height = GetSystemMetrics(1)
+        elif platform.system() == "Darwin":  # macOS
+            import subprocess
+            screen_info = subprocess.check_output(['system_profiler', 'SPDisplaysDataType']).decode('utf-8')
+            for line in screen_info.split('\n'):
+                if 'Resolution' in line:
+                    parts = line.split(':')[1].strip().split(' x ')
+                    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                        screen_width = int(parts[0])
+                        screen_height = int(parts[1])
+                        break
+            else:  # Default if not found
+                screen_width = 1920
+                screen_height = 1080
+        else:  # Linux and others
+            screen_width = 1920  # Default fallback
+            screen_height = 1080
+    except:
+        # Fallback to common resolution if methods above fail
+        screen_width = 1920
+        screen_height = 1080
+    
+    # Calculate window position
+    pos_x = (screen_width - width) // 2
+    pos_y = (screen_height - height) // 2
+    
+    # Set window position
+    cv2.moveWindow(window_name, pos_x, pos_y)
+    print(f"Centering window at ({pos_x}, {pos_y})")
+
+# Define a function to ensure a window is properly created and sized
+def create_sized_window(window_name, width, height):
+    """Create an OpenCV window with the specified size and ensure it's properly displayed"""
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, width, height)
+    
+    # Force the window to be at the specified size by drawing a dummy frame
+    dummy_frame = np.zeros((height, width, 3), dtype=np.uint8)
+    cv2.putText(dummy_frame, f"Initializing {window_name}...", (width//4, height//2),
+               cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 2)
+    cv2.imshow(window_name, dummy_frame)
+    cv2.waitKey(1)  # Give time for window to update
+    
+    # Center the window
+    center_window(window_name, width, height)
+    return dummy_frame
 
 def main():
     # Setup argument parser
@@ -19,22 +82,46 @@ def main():
                         help='Initial screen layout (default, grid, product_comparison, checkout)')
     parser.add_argument('--skip-calibration', action='store_true',
                         help='Skip the calibration phase')
+    parser.add_argument('--simplified', action='store_true',
+                        help='Run in simplified mode for more reliable operation (implies --traditional and --skip-calibration)')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable detailed debug output')
+    parser.add_argument('--mac-fix', action='store_true',
+                        help='Apply Mac-specific fixes for camera issues')
     
     args = parser.parse_args()
     
-    # Initialize the eye tracker
-    tracker = EyeTracker(use_mediapipe=not args.traditional)
+    # If simplified mode is enabled, override other settings
+    if args.simplified:
+        args.traditional = True
+        args.skip_calibration = True
+        print("Running in simplified mode with traditional tracking and no calibration")
     
-    # Create the screen layout manager and initialize the first layout
-    screen_manager = ScreenLayoutManager()
+    # Apply Mac-specific fixes if requested
+    if args.mac_fix:
+        import platform
+        if platform.system() == "Darwin":
+            # Suppress the Continuity Camera warning
+            import os
+            os.environ['OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS'] = '0'
+            print("Applied Mac-specific camera fixes")
+    
+    # Initialize the eye tracker
+    tracker = EyeTracker(use_mediapipe=not args.traditional, debug=args.debug)
+    
+    # Create the screen layout manager with fixed dimensions
+    screen_manager = ScreenLayoutManager(base_width=SCREEN_WIDTH, base_height=SCREEN_HEIGHT)
     
     # Set the initial layout
     simulated_screen = screen_manager.create_layout(args.layout)
     
     # Set the screen dimensions in the gaze analyzer
-    screen_width = screen_manager.base_width
-    screen_height = screen_manager.base_height
+    screen_width = SCREEN_WIDTH  # Use the fixed dimensions
+    screen_height = SCREEN_HEIGHT
     tracker.gaze_analyzer.set_screen_dimensions(screen_width, screen_height)
+    
+    # Print screen dimensions information
+    print(f"Using fixed screen dimensions: {screen_width}x{screen_height}")
     
     # Configure heatmap settings
     tracker.gaze_analyzer.auto_reset_interval = args.auto_reset
@@ -79,29 +166,35 @@ def main():
 
     # Calibration phase
     if not args.skip_calibration:
-        print("\nStarting calibration phase...")
-        print("Please look at each calibration point when it appears.")
-        print("Press SPACE when you're looking at the point.")
-        print("Press ESC to skip calibration.")
+        print("\nStarting pupil calibration phase...")
+        print("Please follow the calibration points with your eyes.")
+        print("For each point, look directly at it and press SPACE when ready.")
+        print("Press ESC to skip calibration entirely.")
         
+        # Define calibration corners with proper names
         calibration_points = [
-            (screen_width // 4, screen_height // 4),    # Top left
-            (3 * screen_width // 4, screen_height // 4), # Top right
-            (screen_width // 4, 3 * screen_height // 4), # Bottom left
-            (3 * screen_width // 4, 3 * screen_height // 4) # Bottom right
+            ("center", (screen_width // 2, screen_height // 2)),              # Center
+            ("top_left", (screen_width // 8, screen_height // 8)),            # Top left
+            ("top_right", (7 * screen_width // 8, screen_height // 8)),       # Top right
+            ("bottom_left", (screen_width // 8, 7 * screen_height // 8)),     # Bottom left
+            ("bottom_right", (7 * screen_width // 8, 7 * screen_height // 8)) # Bottom right
         ]
         
         current_point = 0
         
-        # Create window with specific position
-        cv2.namedWindow('Calibration Feed', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Calibration Feed', 1280, 720)
+        # Create and center calibration window
+        dummy_frame = create_sized_window('Calibration Feed', screen_width, screen_height)
+        
+        # Start the pupil calibration process
+        if tracker.use_mediapipe:
+            tracker.face_mesh_tracker.start_pupil_calibration()
         
         # Countdown variables
         countdown = 0
         countdown_started = False
         
-        while current_point < len(calibration_points):
+        # Main calibration loop
+        while current_point < len(calibration_points) and not args.skip_calibration:
             ret, frame = cap.read()
             if not ret:
                 break
@@ -110,62 +203,100 @@ def main():
             landmarks, iris_landmarks, head_pose = tracker.face_mesh_tracker.process_frame(frame)
             frame_with_landmarks = tracker.face_mesh_tracker.draw_landmarks(frame, landmarks, iris_landmarks, head_pose)
             
+            # Get current calibration point info
+            current_corner_name, current_point_pos = calibration_points[current_point]
+            
             # Create a copy of the frame for drawing calibration overlay
             display_frame = frame_with_landmarks.copy()
             
-            # Draw semi-transparent overlay grid
-            overlay = display_frame.copy()
+            # Create a clean base for the overlay
+            overlay = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
+            
+            # Draw grid lines (lighter)
             for i in range(0, screen_width, 100):
-                cv2.line(overlay, (i, 0), (i, screen_height), (200, 200, 200), 1)
+                cv2.line(overlay, (i, 0), (i, screen_height), (30, 30, 30), 1)
             for i in range(0, screen_height, 100):
-                cv2.line(overlay, (0, i), (screen_width, i), (200, 200, 200), 1)
+                cv2.line(overlay, (0, i), (screen_width, i), (30, 30, 30), 1)
             
             # Draw all calibration points (dimmed)
-            for i, point in enumerate(calibration_points):
+            for i, (corner_name, point) in enumerate(calibration_points):
                 if i == current_point:
-                    # Current point is bright red
-                    cv2.circle(overlay, point, 30, (0, 0, 255), -1)  # Red circle
-                    cv2.circle(overlay, point, 35, (255, 255, 255), 2)  # White border
+                    # Current point is bright red with pulsing effect
+                    pulse_size = 30 + int(10 * np.sin(time.time() * 5))  # Pulsating effect
+                    cv2.circle(overlay, point, pulse_size, (0, 0, 255), -1)  # Red circle
+                    cv2.circle(overlay, point, pulse_size + 5, (255, 255, 255), 2)  # White border
                 else:
                     # Other points are gray
-                    cv2.circle(overlay, point, 20, (128, 128, 128), -1)
+                    cv2.circle(overlay, point, 15, (80, 80, 80), -1)
             
-            # Add text instructions
-            cv2.putText(overlay, f"Point {current_point + 1}/4", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            # Add text instructions with better visibility
+            cv2.putText(overlay, f"Calibration Point {current_point + 1}/{len(calibration_points)}: {current_corner_name.replace('_', ' ').title()}", 
+                       (screen_width // 4, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 2)
             
             if countdown_started:
                 if countdown > 0:
-                    cv2.putText(overlay, f"Recording in {countdown}...", (10, 70),
-                               cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                    cv2.putText(overlay, f"Hold still... recording in {countdown}", (screen_width // 4, 120),
+                               cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 2)
                 else:
-                    cv2.putText(overlay, "Recording...", (10, 70),
-                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    cv2.putText(overlay, "Recording pupil position...", (screen_width // 4, 120),
+                               cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
             else:
-                cv2.putText(overlay, "Press SPACE when ready", (10, 70),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                cv2.putText(overlay, "Look at the RED circle and press SPACE when ready", (screen_width // 4, 120),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 2)
             
-            # Add eye tracking status
+            # Add eye tracking status with better formatting
+            status_y_pos = 180
             if landmarks is None:
-                cv2.putText(overlay, "No face detected", (10, 110),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.putText(overlay, "⚠️ No face detected - please center your face in the camera", 
+                           (screen_width // 4, status_y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             elif iris_landmarks is None or len(iris_landmarks['left']) == 0 or len(iris_landmarks['right']) == 0:
-                cv2.putText(overlay, "No eyes detected", (10, 110),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.putText(overlay, "⚠️ Eyes not detected - please ensure your eyes are visible", 
+                           (screen_width // 4, status_y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             else:
-                cv2.putText(overlay, "Eyes tracked", (10, 110),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(overlay, "✅ Eyes tracked successfully", 
+                           (screen_width // 4, status_y_pos), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                 
-                # Draw current gaze point if available
-                gaze_point = tracker.face_mesh_tracker.calculate_normalized_gaze(iris_landmarks, head_pose)
-                if gaze_point is not None:
-                    gaze_x = int(gaze_point[0] * screen_width)
-                    gaze_y = int(gaze_point[1] * screen_height)
-                    cv2.circle(overlay, (gaze_x, gaze_y), 10, (0, 255, 255), -1)  # Yellow dot for gaze
+                # Draw current eye position
+                # Use a consistent fill color (not affected by pulsing)
+                if iris_landmarks is not None:
+                    left_center = np.mean(iris_landmarks['left'], axis=0).astype(int)
+                    right_center = np.mean(iris_landmarks['right'], axis=0).astype(int)
+                    
+                    # Draw miniature eye tracking visualization
+                    minimap_x = 50
+                    minimap_y = screen_height - 150
+                    minimap_width = 200
+                    minimap_height = 100
+                    
+                    # Draw minimap background
+                    cv2.rectangle(overlay, (minimap_x, minimap_y), 
+                                 (minimap_x + minimap_width, minimap_y + minimap_height), 
+                                 (40, 40, 40), -1)
+                    cv2.rectangle(overlay, (minimap_x, minimap_y), 
+                                 (minimap_x + minimap_width, minimap_y + minimap_height), 
+                                 (100, 100, 100), 1)
+                    
+                    # Map eye positions to minimap
+                    map_left_x = minimap_x + int((left_center[0] / frame.shape[1]) * minimap_width)
+                    map_left_y = minimap_y + int((left_center[1] / frame.shape[0]) * minimap_height)
+                    map_right_x = minimap_x + int((right_center[0] / frame.shape[1]) * minimap_width)
+                    map_right_y = minimap_y + int((right_center[1] / frame.shape[0]) * minimap_height)
+                    
+                    # Draw eye positions
+                    cv2.circle(overlay, (map_left_x, map_left_y), 5, (0, 255, 255), -1)
+                    cv2.circle(overlay, (map_right_x, map_right_y), 5, (0, 255, 255), -1)
+                    
+                    # Label
+                    cv2.putText(overlay, "Eye Tracking", (minimap_x, minimap_y - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
             
-            # Blend the overlay with the original frame
-            alpha = 0.7
-            display_frame = cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0)
+            # Add ESC to skip instruction
+            cv2.putText(overlay, "Press ESC to skip calibration", (screen_width // 4, screen_height - 50),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 150, 150), 1)
+            
+            # Blend camera feed with overlay
+            opacity = 0.2  # Make camera feed very faint
+            display_frame = cv2.addWeighted(frame_with_landmarks, opacity, overlay, 1 - opacity, 0)
             
             # Show the combined frame
             cv2.imshow('Calibration Feed', display_frame)
@@ -173,29 +304,27 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             
             if key == ord(' '):  # Space key
-                if not countdown_started:
+                if not countdown_started and landmarks is not None and iris_landmarks is not None:
                     countdown_started = True
                     countdown = 3
-                    print("Starting countdown...")
+                    print(f"Starting countdown for {current_corner_name}...")
                 elif countdown > 0:
                     countdown -= 1
-                    print(f"Countdown: {countdown}")
                 elif countdown == 0:  # When countdown is finished
                     try:
-                        if tracker.face_mesh_tracker.calibrate(frame, calibration_points[current_point]):
+                        # Record pupil position for this corner
+                        success = tracker.face_mesh_tracker.calibrate_pupil_at_corner(current_corner_name, iris_landmarks)
+                        if success:
+                            print(f"Calibration for {current_corner_name} successful!")
                             current_point += 1
-                            print(f"Calibration point {current_point} recorded successfully!")
                             countdown_started = False
-                            countdown = 0
                         else:
-                            print("Failed to record calibration point. Please try again.")
+                            print(f"Calibration for {current_corner_name} failed. Please try again.")
                             countdown_started = False
-                            countdown = 0
                     except Exception as e:
                         print(f"Error during calibration: {str(e)}")
-                        print("Please try again.")
                         countdown_started = False
-                        countdown = 0
+            
             elif key == 27:  # ESC key
                 print("Calibration skipped")
                 break
@@ -206,6 +335,17 @@ def main():
             print("Warning: Calibration was not completed. Results may be less accurate.")
         else:
             print("Calibration completed successfully!")
+            print("You can now look around the screen and your gaze should be tracked accurately.")
+            
+    # Wait a moment to ensure windows are properly closed
+    time.sleep(0.5)
+
+    # Create and configure the main windows with proper sizes
+    # Smaller window for camera feed
+    create_sized_window('Eye Tracking', 640, 480)
+    
+    # Full-size window for the heatmap display
+    dummy_frame = create_sized_window('Screen with Gaze Heatmap', screen_width, screen_height)
 
     while True:
         ret, frame = cap.read()
@@ -304,19 +444,11 @@ def main():
                     cv2.circle(screen_with_heatmap, (last_gaze_x, last_gaze_y), 15, (0, 0, 255), -1)
                     cv2.circle(screen_with_heatmap, (last_gaze_x, last_gaze_y), 15, (255, 255, 255), 2)
                 
-                # Resize for display if too large
-                display_width = min(screen_width, 1280)
-                display_height = int(display_width * screen_height / screen_width)
-                screen_with_heatmap_resized = cv2.resize(screen_with_heatmap, (display_width, display_height))
-                
-                # Display the screen with heatmap
-                cv2.imshow('Screen with Gaze Heatmap', screen_with_heatmap_resized)
+                # Show the screen at its native resolution (no longer resizing)
+                cv2.imshow('Screen with Gaze Heatmap', screen_with_heatmap)
             else:
                 # Just show the simulated screen if no heatmap data
-                display_width = min(screen_width, 1280)
-                display_height = int(display_width * screen_height / screen_width)
-                screen_resized = cv2.resize(screen_base, (display_width, display_height))
-                cv2.imshow('Screen with Gaze Heatmap', screen_resized)
+                cv2.imshow('Screen with Gaze Heatmap', screen_base)
 
         # Check for key presses
         key = cv2.waitKey(1) & 0xFF
