@@ -23,6 +23,9 @@ class ScreenLayoutManager:
         # Track regions of interest for analytics
         self.regions = {}
         
+        # For storing the full session heatmap
+        self.session_heatmap = None
+        
         # Initialize available layouts
         self.layouts = {
             "default": self._create_default_layout,
@@ -419,10 +422,26 @@ class ScreenLayoutManager:
         
         return overlay
     
-    def save_analytics(self, timestamp=None):
+    def include_session_heatmap(self, heatmap):
+        """
+        Include the full session heatmap for use in analytics reports.
+        
+        Args:
+            heatmap: The full session heatmap array
+        """
+        if heatmap is not None:
+            self.session_heatmap = heatmap
+            return True
+        return False
+    
+    def save_analytics(self, timestamp=None, session_heatmap=None):
         """Save the current analytics to a file."""
         if timestamp is None:
             timestamp = int(time.time())
+        
+        # Update session heatmap if provided
+        if session_heatmap is not None:
+            self.session_heatmap = session_heatmap
         
         # Create a CSV file with the analytics
         csv_path = os.path.join(self.output_dir, f"layout_{self.current_layout}_analytics_{timestamp}.csv")
@@ -443,5 +462,250 @@ class ScreenLayoutManager:
         img_path = os.path.join(self.output_dir, f"layout_{self.current_layout}_heatmap_{timestamp}.png")
         cv2.imwrite(img_path, self.get_analytics_overlay())
         
+        # Create and save comprehensive analytics report
+        report_path = self.create_analytics_report(timestamp)
+        
         print(f"Saved analytics to {csv_path} and {img_path}")
-        return csv_path, img_path 
+        print(f"Comprehensive analytics report saved to {report_path}")
+        return csv_path, img_path
+    
+    def create_analytics_report(self, timestamp=None):
+        """
+        Create a comprehensive visual analytics report.
+        
+        Args:
+            timestamp: Optional timestamp to use in the filename
+            
+        Returns:
+            Path to the saved report image
+        """
+        if timestamp is None:
+            timestamp = int(time.time())
+        
+        # Sort regions by attention (gaze points)
+        sorted_regions = sorted(
+            self.regions.items(), 
+            key=lambda x: x[1]["gaze_points"], 
+            reverse=True
+        )
+        
+        # Skip report if no data
+        if not sorted_regions or sorted_regions[0][1]["gaze_points"] == 0:
+            print("No eye tracking data available for report")
+            return None
+        
+        # Create a large report canvas (3000x2000 pixels)
+        report_width = 3000
+        report_height = 2300  # Increased height to accommodate session heatmap
+        report = np.ones((report_height, report_width, 3), dtype=np.uint8) * 255
+        
+        # Add title and timestamp
+        time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
+        cv2.putText(report, f"Eye Tracking Analysis Report - {self.current_layout.capitalize()}", 
+                   (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 0), 3)
+        cv2.putText(report, f"Generated: {time_str}", 
+                   (50, 130), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (100, 100, 100), 2)
+        
+        # Section 1: Heatmap visualization - top left
+        section_title = "Attention Heatmap"
+        cv2.putText(report, section_title, (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 0), 2)
+        
+        # Get the analytics overlay and resize to fit in the report
+        heatmap = self.get_analytics_overlay()
+        display_width = 1400
+        display_height = int(heatmap.shape[0] * (display_width / heatmap.shape[1]))
+        resized_heatmap = cv2.resize(heatmap, (display_width, display_height))
+        
+        # Place the heatmap on the report
+        heatmap_y = 250
+        report[heatmap_y:heatmap_y+display_height, 50:50+display_width] = resized_heatmap
+        
+        # Section 2: Bar chart of time spent - top right
+        section_title = "Time Spent by Region (seconds)"
+        cv2.putText(report, section_title, (1600, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 0), 2)
+        
+        # Create bar chart for time spent
+        bar_x = 1600
+        bar_y = 250
+        bar_width = 30
+        bar_gap = 15
+        max_bar_height = 500
+        
+        # Get times and calculate maximum for scaling
+        region_names = [r[0] for r in sorted_regions[:10]]  # Top 10 regions
+        times = [r[1]["total_time"] for r in sorted_regions[:10]]
+        max_time = max(times) if times else 1
+        
+        # Draw each bar
+        for i, (region, time_spent) in enumerate(zip(region_names, times)):
+            # Calculate bar height (scaled)
+            bar_height = int((time_spent / max_time) * max_bar_height)
+            if bar_height < 5:  # Ensure minimum visibility
+                bar_height = 5
+                
+            # Select a color based on position (gradient from red to blue)
+            color_value = int(255 * (1 - i / len(region_names)))
+            bar_color = (0, color_value, 255 - color_value)
+            
+            # Draw the bar
+            x = bar_x + i * (bar_width + bar_gap)
+            y = bar_y + max_bar_height - bar_height
+            cv2.rectangle(report, (x, y), (x + bar_width, bar_y + max_bar_height), bar_color, -1)
+            
+            # Add region name (vertical text)
+            displayed_name = region if len(region) < 15 else region[:12] + "..."
+            cv2.putText(report, displayed_name, (x - 10, bar_y + max_bar_height + 50), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+            cv2.putText(report, f"{time_spent:.1f}s", (x - 15, y - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+        
+        # Section 3: Pie chart of views distribution - bottom left
+        section_title = "View Distribution (%)"
+        cv2.putText(report, section_title, (300, bar_y + max_bar_height + 150), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 0), 2)
+        
+        # Create a pie chart
+        pie_center_x = 400
+        pie_center_y = bar_y + max_bar_height + 350
+        pie_radius = 250
+        
+        # Get view counts and calculate total
+        views = [r[1]["gaze_points"] for r in sorted_regions[:7]]  # Top 7 regions
+        total_views = sum(views)
+        
+        # Ensure we have data to show
+        if total_views > 0:
+            # Calculate percentages and angles
+            percentages = [count / total_views * 100 for count in views]
+            
+            # Draw the pie chart
+            start_angle = 0
+            for i, (region, view_count, percentage) in enumerate(zip(region_names[:7], views, percentages)):
+                # Calculate end angle
+                end_angle = start_angle + 360 * (view_count / total_views)
+                
+                # Select a color based on position
+                color_value = int(255 * (1 - i / min(len(region_names), 7)))
+                segment_color = (0, color_value, 255 - color_value)
+                
+                # Draw the pie segment
+                cv2.ellipse(report, (pie_center_x, pie_center_y), (pie_radius, pie_radius),
+                           0, start_angle, end_angle, segment_color, -1)
+                
+                # Calculate position for label (middle of segment)
+                label_angle = (start_angle + end_angle) / 2 * np.pi / 180
+                label_distance = pie_radius * 0.7
+                label_x = int(pie_center_x + np.cos(label_angle) * label_distance)
+                label_y = int(pie_center_y + np.sin(label_angle) * label_distance)
+                
+                # Add percentage label
+                if percentage >= 3:  # Only add labels for segments that are large enough
+                    cv2.putText(report, f"{percentage:.1f}%", (label_x - 20, label_y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                
+                # Move to next segment
+                start_angle = end_angle
+            
+            # Add legend
+            legend_x = pie_center_x + pie_radius + 50
+            legend_y = pie_center_y - pie_radius + 50
+            
+            for i, region in enumerate(region_names[:7]):
+                # Select color matching the pie segment
+                color_value = int(255 * (1 - i / min(len(region_names), 7)))
+                color = (0, color_value, 255 - color_value)
+                
+                # Draw color box
+                cv2.rectangle(report, (legend_x, legend_y + i*40), 
+                             (legend_x + 30, legend_y + i*40 + 30), color, -1)
+                
+                # Add region name
+                displayed_name = region if len(region) < 20 else region[:17] + "..."
+                cv2.putText(report, displayed_name, (legend_x + 40, legend_y + i*40 + 20), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
+        
+        # Section 4: Summary statistics - bottom right
+        section_title = "Summary Statistics"
+        cv2.putText(report, section_title, (1600, bar_y + max_bar_height + 150), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 0), 2)
+        
+        stats_y = bar_y + max_bar_height + 200
+        
+        # Calculate total tracking time
+        total_time = sum(r[1]["total_time"] for r in sorted_regions)
+        cv2.putText(report, f"Total Tracking Time: {total_time:.2f} seconds", 
+                   (1600, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+        
+        # Calculate total gaze points
+        total_gaze_points = sum(r[1]["gaze_points"] for r in sorted_regions)
+        cv2.putText(report, f"Total Gaze Points: {total_gaze_points}", 
+                   (1600, stats_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+        
+        # Most viewed region
+        if sorted_regions:
+            most_viewed = sorted_regions[0][0]
+            most_viewed_time = sorted_regions[0][1]["total_time"]
+            most_viewed_percentage = (most_viewed_time / total_time * 100) if total_time > 0 else 0
+            
+            cv2.putText(report, f"Most Viewed Region: {most_viewed}", 
+                       (1600, stats_y + 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+            cv2.putText(report, f"Time on Most Viewed: {most_viewed_time:.2f}s ({most_viewed_percentage:.1f}%)", 
+                       (1600, stats_y + 150), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+        
+        # Additional insights
+        if len(sorted_regions) >= 3:
+            top3_time = sum(r[1]["total_time"] for r in sorted_regions[:3])
+            top3_percentage = (top3_time / total_time * 100) if total_time > 0 else 0
+            
+            cv2.putText(report, f"Top 3 Regions: {top3_percentage:.1f}% of total attention", 
+                       (1600, stats_y + 200), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+        
+        # Add Full Session Heatmap section
+        section_title = "Full Session Heatmap"
+        session_y = stats_y + 300  # Position below the summary statistics
+        cv2.putText(report, section_title, (50, session_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 0), 2)
+        
+        # Check if we have a session heatmap
+        if self.session_heatmap is not None:
+            # Load the saved full session heatmap if available
+            try:
+                # Normalize and apply colormap to session heatmap
+                normalized = cv2.normalize(self.session_heatmap, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                colored_heatmap = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
+                
+                # Create a blended view with the current screen
+                blended = cv2.addWeighted(self.current_screen, 0.7, colored_heatmap, 0.3, 0)
+                
+                # Resize to fit in the report
+                display_width = 1400
+                display_height = int(blended.shape[0] * (display_width / blended.shape[1]))
+                resized_session_heatmap = cv2.resize(blended, (display_width, display_height))
+                
+                # Place the session heatmap on the report
+                session_heatmap_y = session_y + 50
+                # Ensure we don't go out of bounds
+                if session_heatmap_y + display_height <= report_height:
+                    report[session_heatmap_y:session_heatmap_y+display_height, 50:50+display_width] = resized_session_heatmap
+                    
+                    # Add explanation text
+                    cv2.putText(report, "This heatmap shows the accumulated eye tracking data for the entire session.", 
+                               (1600, session_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 2)
+                    cv2.putText(report, "It provides a comprehensive view of attention patterns across time.", 
+                               (1600, session_y + 90), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 2)
+                    cv2.putText(report, "The full session heatmap is also saved separately.", 
+                               (1600, session_y + 130), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 2)
+            except Exception as e:
+                print(f"Could not include session heatmap in report: {str(e)}")
+                cv2.putText(report, "Full session heatmap is available as a separate file.", 
+                           (50, session_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 150), 2)
+        else:
+            cv2.putText(report, "No full session heatmap available for this report.", 
+                       (50, session_y + 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 150), 2)
+        
+        # Save the report
+        report_filename = f"layout_{self.current_layout}_report_{timestamp}.png"
+        report_path = os.path.join(self.output_dir, report_filename)
+        cv2.imwrite(report_path, report)
+        
+        return report_path 
