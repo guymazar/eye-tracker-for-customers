@@ -73,3 +73,18 @@ Frame 14:
   Temporal: output/gaze_heatmaps/temporal_heatmap_14.png (max: 101.71)
   Time since reset: 10.10s
 
+Frame 0:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_0.png (max: 103.88)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_0.png (max: 75.26)
+  Time since reset: 26.33s
+
+Frame 0:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_0.png (max: 345.26)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_0.png (max: 266.82)
+  Time since reset: 6.80s
+
+Frame 1:
+  Cumulative: output/gaze_heatmaps/cumulative_heatmap_1.png (max: 345.26)
+  Temporal: output/gaze_heatmaps/temporal_heatmap_1.png (max: 145.54)
+  Time since reset: 8.83s
+
