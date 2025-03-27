@@ -82,6 +82,9 @@ class FaceMeshTracker:
         self.image_width = None
         self.image_height = None
         
+        # Add a member variable to store landmarks
+        self.landmarks = None
+        
     def process_frame(self, frame):
         """
         Process a frame to detect facial landmarks.
@@ -117,6 +120,7 @@ class FaceMeshTracker:
         results = self.face_mesh.process(frame_rgb)
         
         if not results.multi_face_landmarks:
+            self.landmarks = None  # Clear landmarks if no face detected
             return None, None, None
             
         # Get the first face's landmarks
@@ -131,6 +135,9 @@ class FaceMeshTracker:
                 z = landmark.z * width  # Use width for z to maintain aspect ratio
                 landmarks.append([x, y, z])
             landmarks = np.array(landmarks, dtype=np.float32)
+            
+            # Store landmarks as a class member for use by other methods
+            self.landmarks = landmarks
             
             # Extract iris landmarks with pixel coordinates
             iris_landmarks = {
@@ -160,6 +167,7 @@ class FaceMeshTracker:
             
         except Exception as e:
             print(f"Error processing landmarks: {str(e)}")
+            self.landmarks = None  # Clear landmarks on error
             return None, None, None
     
     def calibrate(self, frame, point):
@@ -507,60 +515,193 @@ class FaceMeshTracker:
             return None
             
         try:
-            # Calculate center of each iris
+            # Check if landmarks are available
+            if self.landmarks is None:
+                if self.debug:
+                    print("Warning: No face landmarks available for gaze calculation")
+                return None
+            
+            # Get eye contour landmarks for reference
+            left_eye_landmarks = []
+            right_eye_landmarks = []
+            
+            for idx in self.LEFT_EYE_INDICES:
+                if idx < len(self.landmarks):
+                    left_eye_landmarks.append(self.landmarks[idx])
+                elif self.debug:
+                    print(f"Warning: Left eye landmark index {idx} out of range")
+            
+            for idx in self.RIGHT_EYE_INDICES:
+                if idx < len(self.landmarks):
+                    right_eye_landmarks.append(self.landmarks[idx])
+                elif self.debug:
+                    print(f"Warning: Right eye landmark index {idx} out of range")
+            
+            # Check if we have enough landmarks for both eyes
+            if len(left_eye_landmarks) == 0 or len(right_eye_landmarks) == 0:
+                if self.debug:
+                    print(f"Warning: Insufficient eye landmarks - Left: {len(left_eye_landmarks)}, Right: {len(right_eye_landmarks)}")
+                return None
+            
+            # Calculate centers of eye contours (not iris)
+            left_eye_center = np.mean(left_eye_landmarks, axis=0)
+            right_eye_center = np.mean(right_eye_landmarks, axis=0)
+            
+            # Calculate the center of each iris
             left_iris_center = np.mean(iris_landmarks['left'], axis=0)
             right_iris_center = np.mean(iris_landmarks['right'], axis=0)
             
+            # Calculate pupil offset relative to eye center (this is what we emphasize)
+            left_pupil_offset = None
+            right_pupil_offset = None
+            
+            if left_eye_landmarks and right_eye_landmarks:
+                try:
+                    # Make sure dimensions match - eye landmarks may include z coordinate (3D) while iris landmarks are 2D
+                    # Extract only x, y components from eye landmarks
+                    left_eye_center_2d = left_eye_center[:2] if len(left_eye_center) > 2 else left_eye_center
+                    right_eye_center_2d = right_eye_center[:2] if len(right_eye_center) > 2 else right_eye_center
+                    
+                    # Calculate eye width using only x, y components for consistency
+                    left_eye_points_2d = [landmark[:2] for landmark in left_eye_landmarks]
+                    right_eye_points_2d = [landmark[:2] for landmark in right_eye_landmarks]
+                    
+                    # Use first and midpoint landmarks for width calculation
+                    left_eye_width = max(np.linalg.norm(np.array(left_eye_points_2d[0]) - np.array(left_eye_points_2d[4])), 1)
+                    right_eye_width = max(np.linalg.norm(np.array(right_eye_points_2d[0]) - np.array(right_eye_points_2d[4])), 1)
+                    
+                    # Calculate pupil offset as a percentage of eye width
+                    left_pupil_offset = (left_iris_center - left_eye_center_2d) / left_eye_width
+                    right_pupil_offset = (right_iris_center - right_eye_center_2d) / right_eye_width
+                    
+                    if self.debug:
+                        print(f"Pupil offsets calculated successfully - Left: {left_pupil_offset}, Right: {right_pupil_offset}")
+                        
+                except Exception as e:
+                    if self.debug:
+                        print(f"Error calculating pupil offsets: {str(e)}")
+                    left_pupil_offset = None
+                    right_pupil_offset = None
+            elif self.debug:
+                print("Warning: Could not calculate pupil offsets - eye landmarks missing")
+
             # Use calibrated pupil tracking if available
             if self.pupil_calibration_complete:
-                # Calculate the normalized position based on calibrated ranges
-                # For x, we need to invert the mapping (pupil moves left = look right)
-                left_x_norm = 1.0 - self._normalize_value(
-                    left_iris_center[0],
-                    self.pupil_movement_range['left']['min_x'],
-                    self.pupil_movement_range['left']['max_x']
-                )
-                left_y_norm = self._normalize_value(
-                    left_iris_center[1],
-                    self.pupil_movement_range['left']['min_y'],
-                    self.pupil_movement_range['left']['max_y']
-                )
-                
-                right_x_norm = 1.0 - self._normalize_value(
-                    right_iris_center[0],
-                    self.pupil_movement_range['right']['min_x'],
-                    self.pupil_movement_range['right']['max_x']
-                )
-                right_y_norm = self._normalize_value(
-                    right_iris_center[1],
-                    self.pupil_movement_range['right']['min_y'],
-                    self.pupil_movement_range['right']['max_y']
-                )
-                
-                # Average the normalized positions from both eyes
-                normalized_x = (left_x_norm + right_x_norm) / 2
-                normalized_y = (left_y_norm + right_y_norm) / 2
-                
+                # Verify calibration data
                 if self.debug:
-                    print(f"Calibrated gaze: Left ({left_x_norm:.2f}, {left_y_norm:.2f}), "
-                          f"Right ({right_x_norm:.2f}, {right_y_norm:.2f}), "
-                          f"Avg ({normalized_x:.2f}, {normalized_y:.2f})")
+                    print(f"Using calibrated tracking with ranges: Left X: {self.pupil_movement_range['left']['min_x']:.1f}-{self.pupil_movement_range['left']['max_x']:.1f}, "
+                          f"Y: {self.pupil_movement_range['left']['min_y']:.1f}-{self.pupil_movement_range['left']['max_y']:.1f}")
+                    print(f"Current iris positions - Left: {left_iris_center}, Right: {right_iris_center}")
+                
+                try:
+                    # Calculate the normalized position based on calibrated ranges
+                    # For x, we need to invert the mapping (pupil moves left = look right)
+                    left_x_norm = 1.0 - self._normalize_value(
+                        left_iris_center[0],
+                        self.pupil_movement_range['left']['min_x'],
+                        self.pupil_movement_range['left']['max_x']
+                    )
+                    left_y_norm = self._normalize_value(
+                        left_iris_center[1],
+                        self.pupil_movement_range['left']['min_y'],
+                        self.pupil_movement_range['left']['max_y']
+                    )
+                    
+                    right_x_norm = 1.0 - self._normalize_value(
+                        right_iris_center[0],
+                        self.pupil_movement_range['right']['min_x'],
+                        self.pupil_movement_range['right']['max_x']
+                    )
+                    right_y_norm = self._normalize_value(
+                        right_iris_center[1],
+                        self.pupil_movement_range['right']['min_y'],
+                        self.pupil_movement_range['right']['max_y']
+                    )
+                    
+                    # Enhanced pupil-centric tracking - incorporate relative pupil position
+                    if left_pupil_offset is not None and right_pupil_offset is not None:
+                        # Weight: Give 80% importance to calibrated pupil position, 20% to relative pupil offset
+                        pupil_position_weight = 0.8
+                        
+                        # Ensure offset dimensions match expected values
+                        left_offset_x = float(left_pupil_offset[0])
+                        left_offset_y = float(left_pupil_offset[1])
+                        right_offset_x = float(right_pupil_offset[0])
+                        right_offset_y = float(right_pupil_offset[1])
+                        
+                        # Adjust normalized values based on pupil offset
+                        # These adjustments fine-tune the gaze direction based on pupil position within the eye
+                        left_x_norm = left_x_norm * pupil_position_weight + (0.5 - left_offset_x) * (1 - pupil_position_weight)
+                        left_y_norm = left_y_norm * pupil_position_weight + (left_offset_y + 0.5) * (1 - pupil_position_weight)
+                        
+                        right_x_norm = right_x_norm * pupil_position_weight + (0.5 - right_offset_x) * (1 - pupil_position_weight)
+                        right_y_norm = right_y_norm * pupil_position_weight + (right_offset_y + 0.5) * (1 - pupil_position_weight)
+                    
+                    # Average the normalized positions from both eyes
+                    normalized_x = (left_x_norm + right_x_norm) / 2
+                    normalized_y = (left_y_norm + right_y_norm) / 2
+                    
+                    if self.debug:
+                        print(f"Calibrated gaze: Left ({left_x_norm:.2f}, {left_y_norm:.2f}), "
+                              f"Right ({right_x_norm:.2f}, {right_y_norm:.2f}), "
+                              f"Avg ({normalized_x:.2f}, {normalized_y:.2f})")
+                        
+                except Exception as e:
+                    if self.debug:
+                        print(f"Error in calibrated tracking calculation: {str(e)}")
+                    # Fall back to simpler method
+                    normalized_x = 0.5
+                    normalized_y = 0.5
             else:
-                # Fall back to the simple method if not calibrated
-                # Use both eyes to create a more stable gaze estimate
-                normalized_x = (left_iris_center[0] + right_iris_center[0]) / (2 * self.image_width)
-                normalized_y = (left_iris_center[1] + right_iris_center[1]) / (2 * self.image_height)
-                
-                # Apply reduced sensitivity for more reliable tracking
-                x_sensitivity = 1.2  # Reduced from 2.0 for less erratic movement
-                y_sensitivity = 1.0  # Reduced from 1.5 for less erratic movement
-                
-                # Center offset to map [0,1] space to [-0.5,0.5] space for manipulation
-                normalized_x = (normalized_x - 0.5) * x_sensitivity + 0.5
-                normalized_y = (normalized_y - 0.5) * y_sensitivity + 0.5
-                
-                # Invert X axis to match natural eye movement
-                normalized_x = 1.0 - normalized_x
+                # Fall back to the pupil-centric method if not calibrated
+                try:
+                    if left_pupil_offset is not None and right_pupil_offset is not None:
+                        # Put 70% weight on pupil offset within the eye
+                        pupil_offset_weight = 0.7
+                        
+                        # Ensure offset dimensions match expected values
+                        left_offset_x = float(left_pupil_offset[0])
+                        left_offset_y = float(left_pupil_offset[1])
+                        right_offset_x = float(right_pupil_offset[0])
+                        right_offset_y = float(right_pupil_offset[1])
+                        
+                        # Calculate normalized gaze from pupil offset
+                        # When pupil is to the left in the eye, person is looking right (invert x)
+                        pupil_x = 0.5 - (left_offset_x + right_offset_x) / 2
+                        pupil_y = 0.5 + (left_offset_y + right_offset_y) / 2
+                        
+                        # Also consider absolute position for fallback (30% weight)
+                        position_x = (float(left_iris_center[0]) + float(right_iris_center[0])) / (2 * self.image_width)
+                        position_y = (float(left_iris_center[1]) + float(right_iris_center[1])) / (2 * self.image_height)
+                        position_x = 1.0 - position_x  # Invert for natural eye movement mapping
+                        
+                        # Combine both factors with appropriate weights
+                        normalized_x = pupil_x * pupil_offset_weight + position_x * (1 - pupil_offset_weight)
+                        normalized_y = pupil_y * pupil_offset_weight + position_y * (1 - pupil_offset_weight)
+                        
+                        if self.debug:
+                            print(f"Using pupil-centric method - Normalized: ({normalized_x:.2f}, {normalized_y:.2f})")
+                    else:
+                        # Fallback to basic position if we couldn't calculate offsets
+                        normalized_x = 1.0 - (float(left_iris_center[0]) + float(right_iris_center[0])) / (2 * self.image_width)
+                        normalized_y = (float(left_iris_center[1]) + float(right_iris_center[1])) / (2 * self.image_height)
+                        
+                        if self.debug:
+                            print(f"Using basic position method - Normalized: ({normalized_x:.2f}, {normalized_y:.2f})")
+                    
+                    # Apply sensitivity adjustments
+                    x_sensitivity = 1.1  # Reduced sensitivity for more stable tracking
+                    y_sensitivity = 0.9
+                    
+                    # Center offset to map [0,1] space to [-0.5,0.5] space for manipulation
+                    normalized_x = (normalized_x - 0.5) * x_sensitivity + 0.5
+                    normalized_y = (normalized_y - 0.5) * y_sensitivity + 0.5
+                except Exception as e:
+                    if self.debug:
+                        print(f"Error in uncalibrated tracking calculation: {str(e)}")
+                    # Use middle of screen as fallback
+                    normalized_x = 0.5
+                    normalized_y = 0.5
             
             # Apply a deadzone in the center to reduce jitter
             deadzone = 0.03
@@ -580,40 +721,42 @@ class FaceMeshTracker:
                 euler_angles = self._rotation_matrix_to_euler_angles(rotation_matrix)
                 pitch, yaw, roll = euler_angles
                 
-                # Apply a gentler head pose correction
-                head_influence = 0.03  # Further reduced from 0.05 to 0.03
+                # Apply a gentler head pose correction (reduced from previous values)
+                head_influence = 0.02  # Reduced to minimize head position influence
                 normalized_x += yaw * head_influence
                 normalized_y += pitch * head_influence
             
-            # Add current position to history for smoothing
+            # Apply exponential moving average for smoother movement
+            if self.gaze_history:
+                # Blend with previous positions (80% previous, 20% new)
+                blend_factor = 0.8
+                history_weight = blend_factor / len(self.gaze_history)
+                
+                # Calculate weighted average using recent history
+                weighted_x = normalized_x * (1 - blend_factor)
+                weighted_y = normalized_y * (1 - blend_factor)
+                
+                for x, y in self.gaze_history:
+                    weighted_x += x * history_weight
+                    weighted_y += y * history_weight
+                
+                normalized_x = weighted_x
+                normalized_y = weighted_y
+            
+            # Update history
             self.gaze_history.append((normalized_x, normalized_y))
             if len(self.gaze_history) > self.history_length:
-                self.gaze_history.pop(0)  # Remove oldest entry
+                self.gaze_history.pop(0)
             
-            # Apply smoothing by averaging recent positions
-            if len(self.gaze_history) > 1:
-                # Calculate exponentially weighted average (more weight to recent values)
-                weights = [0.5 ** i for i in range(len(self.gaze_history))]
-                weights.reverse()  # Most recent gets highest weight
-                total_weight = sum(weights)
-                
-                normalized_x = sum(x * w for (x, _), w in zip(self.gaze_history, weights)) / total_weight
-                normalized_y = sum(y * w for (_, y), w in zip(self.gaze_history, weights)) / total_weight
-            
-            # Ensure values are between 0 and 1
+            # Ensure values are in [0, 1] range
             normalized_x = max(0, min(1, normalized_x))
             normalized_y = max(0, min(1, normalized_y))
             
-            if self.debug:
-                print(f"Final normalized gaze: ({normalized_x:.2f}, {normalized_y:.2f})")
-            
-            return normalized_x, normalized_y
+            return (normalized_x, normalized_y)
             
         except Exception as e:
-            print(f"Error in gaze calculation: {str(e)}")
             if self.debug:
-                import traceback
-                print(traceback.format_exc())
+                print(f"Error calculating normalized gaze: {str(e)}")
             return None
     
     def _normalize_value(self, value, min_val, max_val):
