@@ -36,8 +36,6 @@ EyeTrackingProject/
 │   │── screen_layout.py    # Screen layout manager for simulated interfaces
 │   │── utils.py            # Helper functions
 │
-│── models/                 # Pre-trained models (Haar cascades, etc.)
-│── data/                   # Sample images/videos for testing
 │── output/                 # Results and logs (heatmaps, logs, etc.)
 │   │── gaze_heatmaps/      # Saved heatmap images
 │   │── logs/               # Log files
