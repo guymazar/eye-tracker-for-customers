@@ -43,7 +43,6 @@ EyeTrackingProject/
 │   │── logs/               # Log files
 │   │── screen_analytics/   # Region-based analytics data and visualizations
 │── tests/                  # Unit tests
-│── docs/                   # Documentation
 │── requirements.txt        # Dependencies
 │── setup.py                # Optional: If packaging is needed
 ```
