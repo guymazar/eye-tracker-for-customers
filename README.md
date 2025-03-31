@@ -56,7 +56,7 @@ pip install -r requirements.txt
 For best results, we recommend using the new calibration system:
 
 ```bash
-python src/main.py --mac-fix
+python src/main.py 
 ```
 
 ### Common Options:
